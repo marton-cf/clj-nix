@@ -28,6 +28,7 @@
 , lockfile ? null
 , compileCljOpts ? null
 , javacOpts ? null
+, aliases ? null
 , enableLeiningen ? false
 
   # Needed for version ranges
@@ -49,6 +50,7 @@ let
     "maven-extra"
     "nativeBuildInputs"
     "compileCljOpts"
+    "aliases"
     "javacOpts"
   ];
 
@@ -139,7 +141,8 @@ stdenv.mkDerivation ({
         ''
           clj-builder uber "${fullId}" "${version}" "${main-ns}" \
             '${builtins.toJSON compileCljOpts}' \
-            '${builtins.toJSON javacOpts}'
+            '${builtins.toJSON javacOpts}' \
+            '${builtins.toJSON aliases}'
         ''
 
       # Don't check for :gen-class with custom build commands

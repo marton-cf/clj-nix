@@ -16,12 +16,9 @@
 
 (defn- get-paths
   "Get paths from deps.edn file"
-  [deps]
-  (-> deps
-      io/file
-      deps/slurp-deps
-      :paths
-      (or ["src"])))
+  [deps aliases]
+  (let [{:keys [paths] :as deps-map} (-> deps io/file deps/slurp-deps)]
+    (concat paths (:extra-paths (deps/combine-aliases deps-map aliases)))))
 
 (defn- parse-compile-clj-opts
   "Transform JSON string to the exptect Clojure data type (keywords, symbols, ...)"
@@ -46,13 +43,15 @@
 (def class-dir "target/classes")
 
 (defn common-compile-options
-  [{:keys [lib-name version]}]
+  [{:keys [lib-name version aliases]}]
   (let [lib-name (if (qualified-symbol? (symbol lib-name))
                    (symbol lib-name)
-                   (symbol lib-name lib-name))]
-    {:src-dirs (get-paths "deps.edn")
-     :basis (b/create-basis {:project "deps.edn"})
-     :lib-name lib-name
+                   (symbol lib-name lib-name))
+        aliases'  (map keyword aliases)
+        src-dirs (get-paths "deps.edn" aliases')]
+    {:src-dirs   src-dirs
+     :basis      (b/create-basis {:project "deps.edn" :aliases aliases'})
+     :lib-name   lib-name
      :output-jar (format "target/%s-%s.jar"
                          (name lib-name)
                          version)}))

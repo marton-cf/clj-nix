@@ -61,6 +61,12 @@ let types = lib.types; in
       type = types.anything;
     };
 
+    aliases = lib.mkOption {
+      default = null;
+      description = lib.mdDoc "Aliases used when calculating basis and src-dirs";
+      type = types.anything;
+    };
+
     javacOpts = lib.mkOption {
       default = null;
       description = lib.mdDoc "Options passed to javac. Needed if the projects contains java source files";
