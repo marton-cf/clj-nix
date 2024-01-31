@@ -426,13 +426,17 @@
 
      :alias-exclude
      {:desc "List of aliases to exclude."
-      :coerce [utils/str->keyword]}}))
+      :coerce [utils/str->keyword]}
+
+     :lock-file-name
+     {:desc "Lock file name"
+      :default "deps-lock.json"}}))
 
 (defn- cli-print-help
   []
   (println "deps-lock usage:\n")
   (println (cli/format-opts {:spec cli-spec
-                             :order [:deps-include :deps-exclude :alias-include :alias-exclude :bb :lein :help]})))
+                             :order [:lock-file-name :deps-include :deps-exclude :alias-include :alias-exclude :bb :lein :help]})))
 
 (defn- cli-parse-options
   [args]
@@ -465,9 +469,9 @@
 
 (defn -main
   [& args]
-  (let [lock-file-name "deps-lock.json"
-        opts (-> (cli-parse-options args)
-                 (rename-keys {:bb :bb? :lein :lein?}))
+  (let [{:keys [lock-file-name] :as opts}
+        (-> (cli-parse-options args)
+            (rename-keys {:bb :bb? :lein :lein?}))
         lock-data (lock-file
                     (str (fs/canonicalize "."))
                     (merge
