@@ -60,8 +60,8 @@
   [{:keys [main-ns compile-clj-opts javac-opts] :as opts}]
   (let [{:keys [src-dirs basis output-jar]}
         (common-compile-options opts)]
-    (b/copy-dir {:src-dirs src-dirs
-                 :target-dir class-dir})
+    #_(b/copy-dir {:src-dirs src-dirs
+                   :target-dir class-dir})
     (when javac-opts
       (b/javac (merge
                  javac-opts
@@ -73,6 +73,7 @@
                      compile-clj-opts (merge (parse-compile-clj-opts compile-clj-opts))))
 
     (b/uber {:class-dir class-dir
+             :exclude [".*\\.clj(c|s)?"]
              :uber-file output-jar
              :basis basis
              :main main-ns})))
