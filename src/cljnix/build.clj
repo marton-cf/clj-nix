@@ -73,6 +73,7 @@
                      compile-clj-opts (merge (parse-compile-clj-opts compile-clj-opts))))
 
     (b/uber {:class-dir class-dir
+             :exclude [#".*\.clj(c|s)?"]
              :uber-file output-jar
              :basis basis
              :main main-ns})))
