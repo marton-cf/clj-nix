@@ -40,15 +40,17 @@ let
     };
 
   git-deps =
+    let lib_ = lib; in
     { lib, url, rev, hash, fetch ? "pkgs.fetchgit", ... }:
+    let git_ssh = lib_.strings.hasPrefix "git+ssh" url; in
     {
       name = "${lib}/${rev}";
       path =
-        if "pkgs.fetchgit" == fetch
+        if (("pkgs.fetchgit" == fetch) && !git_ssh)
         then fetchgit {
           inherit url rev hash;
         }
-        else if "builtins.fetchTree" == fetch
+        else if (("builtins.fetchTree" == fetch) || git_ssh)
           # support credential integration (ssh-agent, ... ) for private git repositories
           # through builtin fetching.
           # See https://nix.dev/manual/nix/latest/language/builtins.html#builtins-fetchTree
