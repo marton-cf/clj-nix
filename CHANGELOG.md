@@ -2,9 +2,21 @@
 
 ## Unreleased
 
+- Add `--lein-profiles` to the deps-lock CLI by #145 @JohnnyJayJay in #145
+
+- Added support to git dependencies in private repositories by #128 @bendlas in
+  #128
+
+- Improved gitlibs support by @mjmeintjes in #120
+
+- Added new options to configure the default builder (`builder-..` options). See
+  [mkCljBin API docs](https://jlesquembre.github.io/clj-nix/api/#mkcljbin). By
+  @jlesquembre in #106
+
+- Added support for additional maven repositories by @jlesquembre in #103
+
 - Refactor CLI, now we use [babashka.cli](https://github.com/babashka/cli) to
-  parse the command line arguments (see #54 and #63, thanks to @bendlas to help
-  with this one)
+  parse the command line arguments. By @jlesquembre in #63 and @bendlas in #54
 
 - Added new flags to `deps-lock` command: `--deps-include`, `--deps-exclude`,
   `--alias-include` and `--alias-exclude`
@@ -21,8 +33,8 @@
 
 - Add `wrap` option to `mkBabashka`
 
-- Check that the `main-ns` has a `:gen-class` in `mkCljBin` (see #39, thanks
-  @slimslenderslacks)
+- Check that the `main-ns` has a `:gen-class` in `mkCljBin` by
+  @slimslenderslacks in #39
 
 ## 0.3.0 (2022-08-03)
 

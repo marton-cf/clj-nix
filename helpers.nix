@@ -42,11 +42,6 @@ in
 
       cfg = _m.config;
 
-      cljDrv = pkgs'.mkCljBin {
-        jdkRunner = cfg.jdk;
-        inherit (cfg) projectSrc name version main-ns buildCommand
-          lockfile java-opts compileCljOpts javacOpts;
-      };
     in
 
     assert (pkgs'.lib.assertMsg
@@ -60,10 +55,27 @@ in
     );
 
     assert (pkgs'.lib.assertMsg
-      (cfg.withLeiningen == true -> cfg.compileCljOpts == false && cfg.javacOpts == false)
+      (cfg.withLeiningen == true -> isNull cfg.compileCljOpts && isNull cfg.javacOpts)
       "Leiningen is incompatible with Clojure tools.build options (compileCljOpts and javacOpts)"
     );
 
+    assert (pkgs'.lib.assertMsg
+      (cfg.buildCommand != null ->
+        cfg.builder-extra-inputs == [ ] && cfg.builder-java-opts == [ ]
+          && cfg.builder-preBuild == "" && cfg.builder-postBuild == ""
+      )
+      "buildCommand and builder-* options are incompatible"
+    );
+
+    let
+      cljDrv = pkgs'.mkCljBin {
+        jdkRunner = cfg.jdk;
+        inherit (cfg) projectSrc name version main-ns buildCommand
+          lockfile java-opts compileCljOpts javacOpts aliases
+          builder-extra-inputs builder-java-opts builder-preBuild builder-postBuild;
+        enableLeiningen = cfg.withLeiningen;
+      };
+    in
 
     if cfg.customJdk.enable then
       pkgs'.customJdk

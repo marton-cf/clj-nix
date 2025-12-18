@@ -10,66 +10,55 @@
     [clojure.tools.deps.cli.api :as tools]
     [clojure.tools.deps :as deps]
     [clojure.tools.gitlibs.config :as gitlibs-config]
+    [clojure.tools.gitlibs.impl :as gitlibs-impl]
     [clojure.data.json :as json]
     [babashka.cli :as cli]
     [babashka.fs :as fs]
     [cljnix.utils :refer [throw+] :as utils]
     [cljnix.nix :refer [nix-hash]]
     [clojure.tools.deps.util.dir :as tools-deps.dir]
-    [clojure.tools.deps.util.io :refer [printerrln]]))
+    [clojure.tools.deps.util.io :refer [printerrln]]
+    [medley.core :as medley]))
 
 
-(def LOCK-VERSION 3)
+(def LOCK-VERSION 4)
 
 (def add-to-nix-store?
   (and
     (fs/exists? "/nix/store")
     (System/getenv "CLJNIX_ADD_NIX_STORE")))
 
-(defn- mvn?
-  [[_ {:keys [mvn/version]}]]
-  (boolean version))
-
-(defn- git?
-  [[_ {:keys [git/url]}]]
-  (boolean url))
-
-(defn- artifact->pom
-  [path]
-  (str (->> (fs/glob (fs/parent path) "*.pom")
-            (sort (fn [x y]
-                    (cond
-                      (string/includes? (fs/file-name x) "SNAPSHOT") -1
-                      (string/includes? (fs/file-name y) "SNAPSHOT") 1
-                      :else (compare (fs/file-name x) (fs/file-name y)))))
-            first)))
-
 (defn maven-deps
-  [basis]
+  [basis mvn-repos]
   (into []
         (comp
-          (filter mvn?)
+          (filter utils/mvn?)
           (map (fn [[lib {:keys [mvn/version paths]}]]
                  (when-not (= 1 (count paths))
                    (throw+ "Maven deps can have only 1 path" {:lib lib :paths paths}))
                  (let [local-path (first paths)]
-                   (assoc (utils/mvn-repo-info local-path {:exact-version version})
+                   (assoc (utils/mvn-repo-info local-path {:exact-version version :mvn-repos mvn-repos})
                           :lib lib
                           :version version
                           :local-path local-path))))
           ; Add POM
           (mapcat (juxt identity
                         (fn [{:keys [local-path version]}]
-                          (let [pom-path (artifact->pom local-path)]
-                            (assoc (utils/mvn-repo-info pom-path {:exact-version version})
+                          (let [pom-path (utils/artifact->pom local-path)]
+                            (assoc (utils/mvn-repo-info pom-path {:exact-version version :mvn-repos mvn-repos})
                                    :version version
                                    :local-path pom-path)))))
-          ; Add parent POM
-          (mapcat (juxt identity
-                        (fn [{:keys [local-path]}]
-                          (when-let [parent-pom-path (utils/get-parent local-path)]
-                            (assoc (utils/mvn-repo-info parent-pom-path {})
-                                   :local-path parent-pom-path)))))
+
+          ; Add extra POMs (parent and management)
+          (mapcat (fn [{:keys [local-path] :as dep}]
+                    (into [dep]
+                          (map #(assoc (utils/mvn-repo-info % {:mvn-repos mvn-repos})
+                                       :local-path %))
+                          (concat
+                            ; (utils/get-parent local-path)
+                            (utils/get-parent-poms local-path)
+                            (utils/get-management-deps local-path)))))
+
           (remove nil?)
           (distinct)
           (map #(assoc % :hash (nix-hash (:local-path %)))))
@@ -80,17 +69,26 @@
   [basis]
   (into []
         (comp
-          (filter git?)
-          (map (fn [[lib {:keys [git/sha git/url deps/root git/tag]}]]
-                 {:lib lib
-                  :rev sha
-                  :url url
-                  :tag tag
-                  :git-dir (utils/git-dir url)
-                  :hash (nix-hash root)
-                  :local-path root})))
+          (filter utils/git?)
+          (map (fn [[lib {:as desc :keys [git/sha git/url deps/root git/tag]}]]
+                 (let [local-path
+                       ;; we need the root repository, even when a :deps/root sub directory has been specified
+                       (-> (string/split root (re-pattern sha))
+                           first
+                           (str sha "/"))]
+                   (when-not (contains? #{nil :pkgs.fetchgit :builtins.fetchTree}
+                                        (:clj-nix.git/fetch desc))
+                     (printerrln "WARNING: No :clj-nix.git/fetch" (pr-str (:clj-nix.git/fetch desc))))
+                   (-> {:lib lib
+                        :rev sha
+                        :url url
+                        :tag tag
+                        :git-dir (utils/git-dir url)
+                        :hash (nix-hash local-path)
+                        :local-path local-path}
+                       (cond-> (contains? desc :clj-nix.git/fetch)
+                         (assoc :fetch (:clj-nix.git/fetch desc))))))))
         (:libs basis)))
-
 
 (def mvn-cache-subdir "mvn")
 (def git-cache-subdir "git")
@@ -98,10 +96,10 @@
 (defn- copy-if-needed
   "Copy if dest doesn't exist"
   [src dest]
-  (let [dest (cond-> dest (fs/directory? dest) (fs/path (fs/file-name src)))]
-    (when-not (fs/exists? (cond-> dest))
-      (fs/copy src dest))))
-
+  (when (fs/exists? src) ;; _remote.repositories files aren't always present
+    (let [dest (cond-> dest (fs/directory? dest) (fs/path (fs/file-name src)))]
+      (when-not (fs/exists? (cond-> dest))
+        (fs/copy src dest)))))
 
 (defn make-maven-cache!
   [deps cache-path]
@@ -160,7 +158,7 @@
 
 
 (defn missing-mvn-deps
-  [deps cache-dir]
+  [deps cache-dir mvn-repos]
   (let [cache-dir (fs/path cache-dir mvn-cache-subdir)
         deps-set (into #{} (mapcat (fn [{:keys [snapshot mvn-path]}]
                                      (if-not snapshot
@@ -175,7 +173,7 @@
             (remove deps-set)
             (map (fn [mvn-path]
                    (let [full-path (fs/path cache-dir mvn-path)]
-                     (assoc (utils/mvn-repo-info full-path {:cache-dir cache-dir})
+                     (assoc (utils/mvn-repo-info full-path {:cache-dir cache-dir :mvn-repos mvn-repos})
                             :hash (nix-hash full-path))))))
 
           (fs/glob cache-dir "**.{pom,jar}"))))
@@ -244,7 +242,8 @@
        (tools/prep options)
 
        (let [basis (deps/create-basis options)
-             mvn-deps (maven-deps basis)
+             mvn-repos (utils/get-maven-repos basis)
+             mvn-deps (maven-deps basis mvn-repos)
              git-deps (git-deps basis)
              _ (make-cache! {:mvn-deps mvn-deps
                              :git-deps git-deps
@@ -252,6 +251,7 @@
                              :prep-options options})]
 
          {:mvn mvn-deps
+          :mvn-repos mvn-repos
           :git git-deps})))))
 
 (defn- aliases-combinations
@@ -274,6 +274,7 @@
            :git-dir 14
 
            :hash 20
+           :fetch 30
 
            :lock-version 100
            :clojure-version 101
@@ -296,19 +297,18 @@
                  "uberjar"
                  "update"
                  "offline"
-                 "debug"})
-       (string/join ",")))
+                 "debug"})))
 
 (defn- download-lein-deps
-  [cache-dir]
+  [cache-dir profiles]
   (let [lein-home (str (fs/path cache-dir "lein"))]
     (fs/create-dir lein-home)
     (spit (str (fs/path lein-home "profiles.clj"))
           {:user {:local-repo (str (fs/path cache-dir mvn-cache-subdir))}})
-    (let [profiles (lein-project-profiles)]
+    (let [profiles (or (seq profiles) (lein-project-profiles))]
       (if (empty? profiles)
         (sh/sh "lein" "deps" :env {"LEIN_HOME" lein-home})
-        (sh/sh "lein" "with-profiles" profiles "deps" :env {"LEIN_HOME" lein-home})))))
+        (sh/sh "lein" "with-profiles" (string/join "," (cons "user" profiles)) "deps" :env {"LEIN_HOME" lein-home})))))
 
 (defn- add-to-nix-store!
   [{:keys [local-path lib rev] :as dep}]
@@ -339,12 +339,41 @@
         (->> (remove (set alias-exclude)))
         (cond->> (seq alias-include) (filter (set alias-include))))))
 
+(def standard-repos
+  (into #{}
+    (map :url)
+    (vals mvn/standard-repos)))
+
+(defn- is-standard-repo
+  [{:keys [mvn-repo]}]
+  (if (standard-repos mvn-repo)
+    0 1))
+
+(defn calc-ancestors [{:keys [cache-dir]} git-libs]
+  (let [gits (group-by :lib git-libs)]
+    (->> git-libs
+         (mapv (fn [{:keys [lib rev git-dir] :as o}]
+                 (if-let [anc (some->> (get gits lib)
+                                       (remove #(= (:rev %) rev))
+                                       (map (fn [{sib-rev :rev}]
+                                              [sib-rev
+                                               (#'gitlibs-impl/ancestor?
+                                                (str (fs/file
+                                                      cache-dir
+                                                      "git/_repos"
+                                                      git-dir))
+                                                rev
+                                                sib-rev)]))
+                                       seq
+                                       (into (sorted-map)))]
+                   (assoc o :ancestor? anc)
+                   o))))))
 
 (defn lock-file
   ([project-dir]
    (lock-file project-dir {}))
   ([project-dir {:keys [extra-mvn extra-git
-                        lein?]
+                        lein? lein-profiles]
                  :or {extra-mvn []
                       extra-git []}
                  :as opts}]
@@ -355,18 +384,20 @@
          (mapcat aliases-combinations)
          (map (fn [[deps-path aliases]] (get-deps! deps-path cache-dir aliases))))
        (completing
-         (fn [acc {:keys [mvn git]}]
+         (fn [acc {:keys [mvn git mvn-repos]}]
            (-> acc
              (update :mvn into mvn)
+             (update :mvn-repos into mvn-repos)
              (update :git into git)))
-         (fn [{:keys [mvn git]}]
+         (fn [{:keys [mvn git mvn-repos]}]
            (when lein?
-             (download-lein-deps cache-dir))
+             (download-lein-deps cache-dir lein-profiles))
            (sorted-map-by
              map-comparator
              :lock-version LOCK-VERSION
-             :mvn-deps (->> (concat mvn (missing-mvn-deps mvn cache-dir))
-                            (sort-by :mvn-path)
+             :mvn-deps (->> (concat mvn (missing-mvn-deps mvn cache-dir mvn-repos))
+                            (sort-by (juxt :mvn-path is-standard-repo :mvn-repo))
+                            (medley/dedupe-by :mvn-path)
                             (map add-to-nix-store!)
                             (map #(into (sorted-map-by map-comparator)
                                         (select-keys % [:mvn-repo :mvn-path :hash :snapshot])))
@@ -380,15 +411,17 @@
                                     (dissoc :tag)))
                             (map add-to-nix-store!)
                             (map #(into (sorted-map-by map-comparator)
-                                        (select-keys % [:tag :lib :rev :url :git-dir :hash])))
+                                        (select-keys % [:tag :lib :rev :url :git-dir :hash :fetch])))
                             (distinct)
                             (reduce (fn [acc v]
                                       (if (same-git-dep? (peek acc) v)
                                         (conj (pop acc) (merge v (peek acc)))
                                         (conj acc v)))
-                                    [])))))
+                                    [])
+                            (calc-ancestors {:cache-dir cache-dir})))))
 
        {:mvn extra-mvn
+        :mvn-repos mvn/standard-repos
         :git extra-git}
        (utils/get-deps-files project-dir opts)))))
 
@@ -410,6 +443,10 @@
      {:desc "Include Leiningen dependecies."
       :validate {:pred boolean?}}
 
+     :lein-profiles
+     {:desc "If Leiningen dependencies are included, the Leiningen profiles to use. If not given, all custom profiles are used."
+      :coerce []}
+
      :deps-include
      {:desc "List of 'deps.edn' files to parse. All files are included by default."
       :coerce []
@@ -426,13 +463,17 @@
 
      :alias-exclude
      {:desc "List of aliases to exclude."
-      :coerce [utils/str->keyword]}}))
+      :coerce [utils/str->keyword]}
+
+     :lock-file-name
+     {:desc "Lock file name"
+      :default "deps-lock.json"}}))
 
 (defn- cli-print-help
   []
   (println "deps-lock usage:\n")
   (println (cli/format-opts {:spec cli-spec
-                             :order [:deps-include :deps-exclude :alias-include :alias-exclude :bb :lein :help]})))
+                             :order [:lock-file-name :deps-include :deps-exclude :alias-include :alias-exclude :bb :lein :lein-profiles :help]})))
 
 (defn- cli-parse-options
   [args]
@@ -465,9 +506,9 @@
 
 (defn -main
   [& args]
-  (let [lock-file-name "deps-lock.json"
-        opts (-> (cli-parse-options args)
-                 (rename-keys {:bb :bb? :lein :lein?}))
+  (let [{:keys [lock-file-name] :as opts}
+        (-> (cli-parse-options args)
+            (rename-keys {:bb :bb? :lein :lein?}))
         lock-data (lock-file
                     (str (fs/canonicalize "."))
                     (merge
@@ -493,7 +534,7 @@
 ; We need all clojure versions in nixpkgs, in case the flake consumer wants to
 ; use a different nixpkgs version
 ; Minimum supported version is 1.10.3
-(def clojure-versions ["1.10.3" "1.11.0" "1.11.1"])
+(def clojure-versions ["1.10.3" "1.11.0" "1.11.1" "1.11.2" "1.11.3" "1.11.4" "1.12.0"])
 
 (defn clojure-deps
   []
@@ -502,7 +543,7 @@
       (str (fs/path tmp-project "deps.edn"))
       {:aliases
        (into {}
-             (map (juxt #(str "clojure-" (string/replace % "." "_"))
+             (map (juxt #(->> (string/replace % "." "_") (str "clojure-") keyword)
                         (fn [v] {:override-deps
                                  {'org.clojure/clojure {:mvn/version v}}})))
              clojure-versions)})
@@ -516,8 +557,8 @@
 (comment
 
   (clojure-deps)
-  (lock-file "/home/jlle/projects/clojure-lsp")
-  (lock-file "/home/jlle/projects/clj-demo-project"
+  (lock-file (fs/expand-home "~/projects/clojure-lsp"))
+  (lock-file (fs/expand-home "~/projects/clj-demo-project")
              {:extra-mvn (-> (io/resource "clojure-deps.edn")
                              slurp
                              edn/read-string)})
@@ -526,7 +567,8 @@
     (tools-deps.dir/with-dir (fs/file (fs/parent deps-path))
       (maven-deps
         (deps/create-basis {:user nil
-                            :project (str deps-path)}))))
+                            :project (str deps-path)})
+        mvn/standard-repos)))
 
   (add-to-nix-store!
     {:local-path
@@ -539,7 +581,7 @@
      :rev "7d40500863818c6f9a6e077b18db305d02149384"
      :lib "io.github.clojure/tools.build"})
 
-  (get-deps! (fs/file "deps.edn") "/tmp/my-deps")
+  (get-deps! "~/projects/clj-demo-project/deps.edn" "/tmp/my-deps" nil)
 
   (-> (fs/canonicalize "deps.edn")
     (deps-file->deps+alias {:alias-include [:main]})

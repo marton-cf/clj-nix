@@ -43,6 +43,7 @@
       packages = eachSystem (pkgs:
         {
           inherit (pkgs) clj-builder deps-lock mk-deps-cache
+            fake-git
             mkCljBin mkCljLib mkGraalBin customJdk
             cljHooks
             mkBabashka bbTasksFromFile;
@@ -71,6 +72,7 @@
                 help = "Update builder-lock.json and clojure-deps.edn";
                 command =
                   ''
+                    clojure -Sdeps '{:deps {com.github.liquidz/antq {:mvn/version "RELEASE"}}}' -M -m antq.core --upgrade --force
                     clj -X cljnix.bootstrap/as-json :deps-path '"deps.edn"' | jq . > pkgs/builder-lock.json
                     clj -X cljnix.core/clojure-deps-str > src/clojure-deps.edn
                   '';
@@ -117,7 +119,9 @@
       overlays.default = final: prev:
         let common = final.callPackage ./pkgs/common.nix { }; in
         {
-          inherit (final.callPackage ./pkgs/cljApps.nix { }) clj-builder deps-lock;
+          fake-git = final.callPackage ./pkgs/fakeGit.nix { };
+          deps-lock = final.callPackage ./pkgs/depsLock.nix { inherit common; };
+          clj-builder = final.callPackage ./pkgs/cljBuilder.nix { inherit common; };
           mk-deps-cache = final.callPackage ./pkgs/mkDepsCache.nix;
           mkCljBin = final.callPackage ./pkgs/mkCljBin.nix { inherit common; };
           mkCljLib = final.callPackage ./pkgs/mkCljLib.nix { };

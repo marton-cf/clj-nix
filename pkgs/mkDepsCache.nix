@@ -10,7 +10,7 @@
 , maven-extra ? [ ]
 }:
 let
-  deps-lock-version = 3;
+  deps-lock-version = 4;
 
   consUrl = segments:
     lib.pipe
@@ -40,12 +40,33 @@ let
     };
 
   git-deps =
-    { lib, url, rev, hash, ... }:
+    let lib_ = lib; in
+    { lib, url, rev, hash, fetch ? "pkgs.fetchgit", ... }:
+    let git_ssh = lib_.strings.hasPrefix "git+ssh" url; in
     {
       name = "${lib}/${rev}";
-      path = fetchgit {
-        inherit url rev hash;
-      };
+      path =
+        if (("pkgs.fetchgit" == fetch) && !git_ssh)
+        then fetchgit {
+          inherit url rev hash;
+        }
+        else if (("builtins.fetchTree" == fetch) || git_ssh)
+          # support credential integration (ssh-agent, ... ) for private git repositories
+          # through builtin fetching.
+          # See https://nix.dev/manual/nix/latest/language/builtins.html#builtins-fetchTree
+          # This is not a good default, because it will download
+          # the repository during evaluation, even for a dry-run
+          # Pending https://github.com/NixOS/nix/issues/9077
+        then builtins.fetchTree {
+          type = "git";
+          allRefs = true;
+          narHash = hash;
+          inherit url rev;
+          # deep cloning is necessary, for allRefs to work
+          # See https://nix.dev/manual/nix/latest/language/builtins.html#source-types
+          shallow = false;
+        }
+        else throw "clj-nix.mkDepsCache: unknown :clj-nix.git/fetch :${toString fetch}";
     };
 
   maven-extra-cache = { path, content }:
@@ -70,10 +91,12 @@ let
       '' +
       (lib.concatMapStringsSep
         "\n"
-        ({ git-dir, ... }:
+        ({ git-dir, rev, ... }@data:
           ''
-            mkdir -p $out/${git-dir}
+            mkdir -p $out/${git-dir}/revs
+            json='${builtins.toJSON data}'
             touch $out/${git-dir}/config
+            echo "$json" > $out/${git-dir}/revs/${rev}
           ''
         )
         lock.git-deps)

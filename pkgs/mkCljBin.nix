@@ -13,6 +13,7 @@
 , clj-builder
 , mk-deps-cache
 , common
+, fake-git
 
 }:
 
@@ -28,7 +29,12 @@
 , lockfile ? null
 , compileCljOpts ? null
 , javacOpts ? null
+, aliases ? null
 , enableLeiningen ? false
+, builder-extra-inputs ? [ ]
+, builder-java-opts ? [ ]
+, builder-preBuild ? ""
+, builder-postBuild ? ""
 
   # Needed for version ranges
   # TODO maybe we can find a better solution?
@@ -49,7 +55,12 @@ let
     "maven-extra"
     "nativeBuildInputs"
     "compileCljOpts"
+    "aliases"
     "javacOpts"
+    "builder-extra-inputs"
+    "builder-java-opts"
+    "builder-preBuild"
+    "builder-postBuild"
   ];
 
   deps-cache = mk-deps-cache {
@@ -77,10 +88,17 @@ stdenv.mkDerivation ({
     attrs.nativeBuildInputs or [ ]
       ++
       [
+        fake-git
         jdkRunner
-        clj-builder
+        (clojure.override { jdk = jdkRunner; })
+        (clj-builder.override {
+          jdk = jdkRunner;
+          extra-runtime-inputs = builder-extra-inputs;
+          java-opts = builder-java-opts;
+          preBuild = builder-preBuild;
+          postBuild = builder-postBuild;
+        })
       ]
-      ++ (lib.lists.optional (! isNull buildCommand) (clojure.override { jdk = jdkRunner; }))
       ++ (lib.lists.optional enableLeiningen leiningen);
 
   outputs = [ "out" "lib" ];
@@ -91,20 +109,15 @@ stdenv.mkDerivation ({
     inherit main-ns fullId groupId artifactId javaMain;
   };
 
-  patchPhase =
-    ''
-      runHook prePatch
-    ''
-    +
+  preBuildPhases = [ "preBuildPhase" ];
+  preBuildPhase =
     (lib.strings.optionalString (! isNull lockfile)
       ''
         cp "${lockfile}" deps-lock.json
       ''
-    )
-    +
+    ) +
     ''
       clj-builder patch-git-sha "$(pwd)"
-      runHook postPatch
     '';
 
   # Clojure environment variables:
@@ -139,7 +152,8 @@ stdenv.mkDerivation ({
         ''
           clj-builder uber "${fullId}" "${version}" "${main-ns}" \
             '${builtins.toJSON compileCljOpts}' \
-            '${builtins.toJSON javacOpts}'
+            '${builtins.toJSON javacOpts}' \
+            '${builtins.toJSON aliases}'
         ''
 
       # Don't check for :gen-class with custom build commands

@@ -1,11 +1,11 @@
 { stdenv
 , lib
 , runtimeShell
-, jdk17_headless
+, jdk_headless
 , cljHooks
 }:
 
-{ jdkBase ? jdk17_headless
+{ jdkBase ? jdk_headless
 , name ? "customJDK"
 , version ? "DEV"
 , cljDrv ? null
